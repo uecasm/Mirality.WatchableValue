@@ -1,0 +1,2 @@
+# Force all files to be treated as non-text; this preserves line endings however they were originally committed.
+* -text

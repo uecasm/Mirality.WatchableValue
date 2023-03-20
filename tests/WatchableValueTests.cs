@@ -5,7 +5,7 @@ public class WatchableValueTests
     private record TestValue(string Part1, string? Part2);
 
     [Test]
-    public void TestWatchToken()
+    public void TestWatchTokenViaExternal()
     {
         var source = new CancellationTokenSource();
         var value = WatchableValue.Create("test", new CancellationChangeToken(source.Token));
@@ -20,21 +20,34 @@ public class WatchableValueTests
     }
 
     [Test]
+    public void TestWatchTokenViaSource()
+    {
+        var source = WatchableValueSource.Create("test");
+
+        Assert.That(source.Value.WatchToken.HasChanged, Is.False);
+        source.Invalidate();
+        Assert.That(source.Value.WatchToken.HasChanged, Is.True);
+
+        var (v, t) = source.Value;
+        Assert.That(v, Is.SameAs(source.Value.Value));
+        Assert.That(t, Is.SameAs(source.Value.WatchToken));
+    }
+
+    [Test]
     public void TestDeconstruct()
     {
-        var source = new CancellationTokenSource();
-        var value = WatchableValue.Create("test", "test", new CancellationChangeToken(source.Token));
+        var source = WatchableValueSource.Create("test", "test");
 
-        var (v, t) = value;
+        var (v, t) = source.Value;
         Assert.Multiple(() =>
         {
-            Assert.That(v, Is.SameAs(value.Value));
-            Assert.That(t, Is.SameAs(value.WatchToken).And.InstanceOf<NamedChangeToken>());
+            Assert.That(v, Is.SameAs(source.Value.Value));
+            Assert.That(t, Is.SameAs(source.Value.WatchToken).And.InstanceOf<NamedChangeToken>());
             Assert.That(t.ToString(), Is.EqualTo("ChangeToken{test}"));
             Assert.That(t.ActiveChangeCallbacks, Is.True);
         });
 
-        var (n, ct) = (NamedChangeToken) value.WatchToken;
+        var (n, ct) = (NamedChangeToken) source.Value.WatchToken;
         Assert.Multiple(() =>
         {
             Assert.That(n, Is.EqualTo("test"));
@@ -45,70 +58,95 @@ public class WatchableValueTests
     [Test]
     public void TestSelect()
     {
-        var source = new CancellationTokenSource();
-        var token = new CancellationChangeToken(source.Token);
+        var source = WatchableValueSource.Create(new TestValue("hello", "world"));
 
-        var value = WatchableValue.Create(new TestValue("hello", "world"), token);
-
-        var part1 = value.Select(v => v.Part1);
-        var part2 = value.Select(v => v.Part2);
+        var part1 = source.Value.Select(v => v.Part1);
+        var part2 = source.Value.Select(v => v.Part2);
 
         Assert.Multiple(() =>
         {
             Assert.That(part1.Value, Is.EqualTo("hello"));
             Assert.That(part2.Value, Is.EqualTo("world"));
-            Assert.That(token, Is.SameAs(value.WatchToken).And.SameAs(part1.WatchToken).And.SameAs(part2.WatchToken));
+            Assert.That(source.Value.WatchToken, Is.SameAs(part1.WatchToken).And.SameAs(part2.WatchToken));
         });
     }
 
     [Test]
     public void TestWatch()
     {
-        var sequence = new[] { "abc", "123", "test", "hello world" };
-        var nextIndex = 0;
-        var results = new List<string>();
-        CancellationTokenSource? currentSource = null;
-        NamedChangeToken? currentToken = null;
+        var consumer = new ValueConsumer<string>();
+        var producer = new ValueProducer<string>("abc", "0");
+        using var subscription = WatchableValue.Watch(() => producer.Value, consumer.Consume);
 
-        WatchableValue<string> Producer()
-        {
-            currentSource = new CancellationTokenSource();
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "abc" }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("0"));
 
-            var value = sequence[nextIndex];
-            var token = new NamedChangeToken(nextIndex.ToString(), new CancellationChangeToken(currentSource.Token));
-            ++nextIndex;
+        producer.Change("123", "1");
 
-            return WatchableValue.Create(value, token);
-        }
-
-        void Consumer(WatchableValue<string> value)
-        {
-            results.Add(value.Value);
-            currentToken = (NamedChangeToken) value.WatchToken;
-        }
-
-        using var subscription = WatchableValue.Watch(Producer, Consumer);
-
-        Assert.That(results, Is.EqualTo(new[] { "abc" }));
-        Assert.That(currentToken?.Name, Is.Not.Null.And.EqualTo("0"));
-
-        currentSource!.Cancel();
-
-        Assert.That(results, Is.EqualTo(new[] { "abc", "123" }));
-        Assert.That(currentToken?.Name, Is.Not.Null.And.EqualTo("1"));
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "abc", "123" }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("1"));
 
         subscription.Dispose();
-        currentSource!.Cancel();
+        producer.Change("test", "2");
 
-        Assert.That(results, Is.EqualTo(new[] { "abc", "123" }));
-        Assert.That(currentToken?.Name, Is.Not.Null.And.EqualTo("1"));
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "abc", "123" }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("1"));
 
-        ++nextIndex;
-        using var subscription2 = WatchableValue.Watch(Producer, Consumer);
+        producer.Change("hello world", "3");
+        // ReSharper disable once AccessToModifiedClosure
+        using var subscription2 = WatchableValue.Watch(() => producer.Value, consumer.Consume);
 
-        Assert.That(results, Is.EqualTo(new[] { "abc", "123", "hello world" }));
-        Assert.That(currentToken?.Name, Is.Not.Null.And.EqualTo("3"));
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "abc", "123", "hello world" }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("3"));
+    }
 
-        Assert.That(() => currentSource!.Cancel(), Throws.InnerException.InstanceOf<IndexOutOfRangeException>());
+    [Test]
+    public void TestNullable()
+    {
+        var consumer = new ValueConsumer<string?>();
+
+        WatchableValueSource<string?>? source = null;
+
+        WatchableValueSource.Change(ref source, "test", "0");
+
+        // ReSharper disable once AccessToModifiedClosure
+        using var subscription = WatchableValue.Watch(() => source.Value, consumer.Consume);
+
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "test" }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("0"));
+
+        WatchableValueSource.Change(ref source, null, "1");
+
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "test", null }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("1"));
+    }
+
+    private class ValueProducer<T>
+    {
+        private WatchableValueSource<T> _CurrentValue;
+
+        public ValueProducer(T initialValue, string name)
+        {
+            _CurrentValue = WatchableValueSource.Create(initialValue, name);
+        }
+
+        public WatchableValue<T> Value => _CurrentValue.Value;
+
+        public void Change(T newValue, string name)
+        {
+            _ = WatchableValueSource.Change(ref _CurrentValue, newValue, name);
+        }
+    }
+
+    private class ValueConsumer<T>
+    {
+        public List<T> Values { get; } = new();
+        public NamedChangeToken? LastChangeToken { get; private set; }
+
+        public void Consume(WatchableValue<T> value)
+        {
+            Values.Add(value.Value);
+            LastChangeToken = (NamedChangeToken) value.WatchToken;
+        }
     }
 }

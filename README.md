@@ -8,7 +8,7 @@ Not only does it seem natural to store a value and its expiration notifier toget
 
 It does assume that you will be watching all the time; if you're only sometimes watching for changes (e.g. only in development environment) then this may not be suitable, although you can use tricks such as swapping out your token generator to only return a `NullChangeToken` in cases where you want to disable the watching.
 
-It is compiled for .NET Standard 2.0, so it can be used from .NET Framework 4.7.2+ (assuming that you have a suitable file provider) as well as .NET Core/5+.  As of this writing, it is primarily tested with .NET 6.
+It is compiled for .NET Standard 2.0, so it can be used from .NET Framework 4.7.2+ as well as .NET Core/5+.  As of this writing, it is primarily tested with .NET 6.
 
 # Installation
 
@@ -39,7 +39,7 @@ var subscription = WatchableValue.Watch(() => myFooService.GetCurrentFoo(), foo 
 subscription.Dispose();
 ```
 
-Also included is an extension method for `IFileProvider` which simply wraps file info together with a change token:
+Also included is an extension method for `IFileProvider` which simply wraps file info together with a change token (although this must be a specific file, not a wildcard):
 
 ```cs
 var subscription = WatchableValue.Watch(() => fileProvider.WatchFileInfo("path/to/file"), file =>
@@ -129,16 +129,19 @@ public class SomeClassThatLazilyGeneratesFoo
 {
     private WatchableValueSource<Foo>? _CurrentFoo;
 
+    public SomeClassThatLazilyGeneratesFoo()
+    {
+        // subscribe to things that will tell you about changes
+    }
+
     public WatchableValue<Foo> GetCurrentFoo()
     {
-        var currentFoo = _CurrentFoo;   // local capture important
+        return WatchableValueSource.GetOrChange(ref _CurrentFoo, GenerateNewFoo);
+    }
 
-        if (currentFoo?.Value.HasChanged == false)
-        {
-            return currentFoo.Value;
-        }
-
-        return WatchableValueSource.Change(ref _CurrentFoo, GenerateNewFoo()).Value;
+    private void SomeInternalEventTriggeredWhenYouKnowFooIsOutdated()
+    {
+        _CurrentFoo?.Invalidate();
     }
 
     private Foo GenerateNewFoo()
@@ -149,9 +152,11 @@ public class SomeClassThatLazilyGeneratesFoo
 }
 ```
 
+The eager variant will always generate a new `Foo` even if nothing is currently subscribed; the lazy variant will wait until someone calls `GetCurrentFoo()`, either directly or from a subscription.
+
 For best results, you should *never* access `_CurrentFoo` in any way other than as shown above -- and in particular, don't call `GetCurrentFoo()` yourself from the same code flow that calls `Change`; use the return value of `Change` instead if needed (or use local variables for `Foo` or parts thereof, if you don't need the resulting watchable value or change token).
 
-This implements some thread-safety (atomicity) via `Interlocked.Exchange` and immutable classes, such that even if multiple threads are triggering `Change`, any observers will see consistent results from `GetCurrentFoo()`'s value and change token.  It does not require additional locking, although you may require locks for other reasons (e.g. during the calculation of the new value, or to throttle recalculations triggered by internal change tokens or events).  By itself, it does not guarantee that `GenerateNewFoo()` will not be called concurrently, just that only one of the results will be "kept" and it will be consistent.
+This implements some thread-safety (atomicity) via `Interlocked.Exchange` and immutable classes, such that even if multiple threads are triggering `Change`, any observers will see consistent results from `GetCurrentFoo()`'s value and change token.  It does not require additional locking, although you may require locks for other reasons (e.g. during the calculation of the new value, or to throttle recalculations triggered by internal change tokens or events).  By itself, it does not guarantee that `GenerateNewFoo()` will not be called concurrently, just that only one of the results will be "kept" and it will present a consistent view to consumers.
 
 You can, of course, also supply a name to go with this for debugging purposes.
 
@@ -163,7 +168,7 @@ The change token does not have to be unique to a particular value -- it's entire
 
 When the change token signals a change, that does not necessarily mean that the associated value *actually* changed -- it simply means that the source of the value now considers it potentially stale, or it has generated a new instance for reasons of its own.  For example, a file could have been re-written with exactly the same content, or with a change to content that did not affect the resulting value, or that affected some part of a larger value but not the particular `Select`ed subset you're currently using.  You may still need to keep track of the previous value and check if it actually changed, if processing the change is expensive or has side effects.
 
-`Watch` assumes that tokens will actively invoke callbacks (`ActiveChangeCallbacks == true`) on change (it doesn't assert this, to remain compatible with `NullChangeToken`).  If you want to watch a polling-only token, then you will either have to use a different method or wrap it into a new token that uses a timer to triggers callbacks.
+`Watch` assumes that tokens will actively invoke callbacks (`ActiveChangeCallbacks == true`) on change (it doesn't assert this, to remain compatible with `NullChangeToken`).  If you want to watch a polling-only token, then you will either have to use a different method or wrap it into a new token that uses a timer to triggers callbacks.  Having said that, at the end-use you don't *have* to actively watch/subscribe for changes, you can lazily poll (e.g. on user action, not a timer) if that makes more sense for your usage.  But intermediate token providers should support both styles.
 
 `WatchableValue.Watch` is a little different from `ChangeToken.OnChange` – the latter will call your action only when a change is detected, while the former will call immediately and then again on each change.  This difference is because it's more efficient when the value and token are calculated together.
 

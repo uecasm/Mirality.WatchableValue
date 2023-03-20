@@ -68,5 +68,27 @@ namespace Mirality.WatchableValue
 #pragma warning disable CS8777  // 'field' is guaranteed not null by Exchange (since newSource is)
         }
 #pragma warning restore CS8777
+
+        /// <summary>Returns the existing value if it is still valid, or calls the given factory to calculate a new one if not.</summary>
+        /// <remarks>If this is called concurrently while the value is not valid, it may call <paramref name="factory"/> concurrently as well.</remarks>
+        /// <typeparam name="T">The type of value (reference or value type, nullable or not).</typeparam>
+        /// <param name="field"><para>A field that stores the value source.</para><para>This is allowed to be initially null; it will always be not null after this is called.</para></param>
+        /// <param name="factory">A factory method called to produce a new value if the current one is invalid.</param>
+        /// <param name="name">An optional name to associate with the <see cref="IChangeToken"/> for debugging purposes.</param>
+        /// <returns>The <see cref="WatchableValue{T}"/>.</returns>
+        public static WatchableValue<T> GetOrChange<T>([NotNull] ref WatchableValueSource<T>? field,
+            Func<T> factory, string? name = null)
+        {
+            var value = field?.Value;
+
+            if (value?.WatchToken.HasChanged == false)
+            {
+#pragma warning disable CS8777  // can only reach here if 'field' is already not null
+                return value.Value;
+#pragma warning restore CS8777
+            }
+
+            return Change(ref field, factory(), name).Value;
+        }
     }
 }

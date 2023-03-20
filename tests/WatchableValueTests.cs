@@ -72,7 +72,7 @@ public class WatchableValueTests
     }
 
     [Test]
-    public void TestWatch()
+    public void TestWatchEager()
     {
         var consumer = new ValueConsumer<string>();
         var producer = new ValueProducer<string>("abc", "0");
@@ -80,6 +80,10 @@ public class WatchableValueTests
 
         Assert.That(consumer.Values, Is.EqualTo(new[] { "abc" }));
         Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("0"));
+
+        var another = producer.Value;
+        Assert.That(another.Value, Is.EqualTo("abc"));
+        Assert.That(another.WatchToken, Is.SameAs(consumer.LastChangeToken));
 
         producer.Change("123", "1");
 
@@ -93,11 +97,47 @@ public class WatchableValueTests
         Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("1"));
 
         producer.Change("hello world", "3");
-        // ReSharper disable once AccessToModifiedClosure
         using var subscription2 = WatchableValue.Watch(() => producer.Value, consumer.Consume);
 
         Assert.That(consumer.Values, Is.EqualTo(new[] { "abc", "123", "hello world" }));
         Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("3"));
+    }
+
+    [Test]
+    public void TestWatchLazy()
+    {
+        var consumer = new ValueConsumer<string>();
+        var producer = new LazyValueProducer<string>(new[] { "abc", "123", "test", "hello world" });
+
+        using var subscription = WatchableValue.Watch(() => producer.GetCurrentValue(), consumer.Consume);
+
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "abc" }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("0"));
+
+        var another = producer.GetCurrentValue();
+        Assert.That(another.Value, Is.EqualTo("abc"));
+        Assert.That(another.WatchToken, Is.SameAs(consumer.LastChangeToken));
+
+        producer.Invalidate();
+
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "abc", "123" }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("1"));
+
+        subscription.Dispose();
+        producer.Invalidate();
+
+        Assert.That(consumer.Values, Is.EqualTo(new[] { "abc", "123" }));
+        Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("1"));
+
+        var newValue = producer.GetCurrentValue();
+
+        Assert.That(newValue.Value, Is.EqualTo("test"));
+        Assert.That(((NamedChangeToken) newValue.WatchToken).Name, Is.EqualTo("2"));
+
+        var newValue2 = producer.GetCurrentValue();
+
+        Assert.That(newValue2.Value, Is.EqualTo("test"));
+        Assert.That(newValue2.WatchToken, Is.SameAs(newValue.WatchToken));
     }
 
     [Test]
@@ -135,6 +175,40 @@ public class WatchableValueTests
         public void Change(T newValue, string name)
         {
             _ = WatchableValueSource.Change(ref _CurrentValue, newValue, name);
+        }
+    }
+
+    private class LazyValueProducer<T>
+    {
+        private readonly IEnumerator<T> _NextValue;
+        private int _CurrentIndex = 0;
+        private WatchableValueSource<T>? _CurrentValue;
+
+        public LazyValueProducer(IEnumerable<T> values)
+        {
+            _NextValue = values.GetEnumerator();
+            // ignoring _NextValue.Dispose() since this is a no-op for array/list
+        }
+
+        public void Invalidate()
+        {
+            _CurrentValue?.Invalidate();
+        }
+
+        public WatchableValue<T> GetCurrentValue()
+        {
+            return WatchableValueSource.GetOrChange(ref _CurrentValue, GetNextValue, _CurrentIndex.ToString());
+        }
+
+        private T GetNextValue()
+        {
+            if (_NextValue.MoveNext())
+            {
+                ++_CurrentIndex;
+                return _NextValue.Current;
+            }
+
+            throw new IndexOutOfRangeException();
         }
     }
 

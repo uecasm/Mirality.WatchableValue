@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace Mirality.WatchableValue.Tests;
 
 public class WatchableValueTests
@@ -161,6 +163,33 @@ public class WatchableValueTests
         Assert.That(consumer.LastChangeToken?.Name, Is.Not.Null.And.EqualTo("1"));
     }
 
+    [Test]
+    public void TestProgress()
+    {
+        var oldContext = SynchronizationContext.Current;
+        var context = new ManualSynchronizationContext();
+        SynchronizationContext.SetSynchronizationContext(context);
+        try
+        {
+            var values = new List<string?>();
+            var progress = new WatchableValueProgress<string?>(null);
+
+            using var subscription = WatchableValue.Watch(() => progress.Value, v => values.Add(v.Value));
+
+            Assert.That(values, Is.EqualTo(new string?[] { null }));
+
+            progress.Progress.Report("test");                           // marshaled via SynchronizationContext
+            Assert.That(values, Is.EqualTo(new string?[] { null }));    // so not updated yet
+
+            context.ExecutePending();
+            Assert.That(values, Is.EqualTo(new[] { null, "test" }));
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(oldContext);
+        }
+    }
+
     private class ValueProducer<T>
     {
         private WatchableValueSource<T> _CurrentValue;
@@ -221,6 +250,29 @@ public class WatchableValueTests
         {
             Values.Add(value.Value);
             LastChangeToken = (NamedChangeToken) value.WatchToken;
+        }
+    }
+
+    private class ManualSynchronizationContext : SynchronizationContext
+    {
+        private readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _Work = new();
+
+        public override SynchronizationContext CreateCopy()
+        {
+            return new ManualSynchronizationContext();
+        }
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            _Work.Enqueue((d, state));
+        }
+
+        public void ExecutePending()
+        {
+            while (_Work.TryDequeue(out var task))
+            {
+                task.Callback(task.State);
+            }
         }
     }
 }

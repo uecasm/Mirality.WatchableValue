@@ -160,6 +160,20 @@ This implements some thread-safety (atomicity) via `Interlocked.Exchange` and im
 
 You can, of course, also supply a name to go with this for debugging purposes.
 
+## `WatchableValueProgress`
+
+If you have some existing async APIs that produce progress values, they're probably already using `IProgress<T>`.  Or even if you're writing new code, this is a convenient interface for providing progress notifications, and also provides some integrated thread-marshaling via `SynchronizationContext`.
+
+The `WatchableValueProgress<T>` class provides an adapter that wraps a `WatchableValueSource<T>`, such that consumers see a `WatchableValue<T>` and producers see an `IProgress<T>`:
+
+```cs
+var watchableProgress = new WatchableValueProgress<string?>(null);
+using var subscription = WatchableValue.Watch(() => watchableProgress.Value, value => { ... });
+await SomeMethod(watchableProgress.Progress, ...);
+```
+
+This also supports providing a name for debugging purposes, although only for the progress object as a whole, not editable with each new value.
+
 # Notes
 
 The watched value could be as small as a single integer or string, or as large as an entire parsed object model, or anywhere in between.

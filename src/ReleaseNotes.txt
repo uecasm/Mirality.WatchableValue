@@ -1,4 +1,7 @@
-﻿1.1.1
+﻿1.2.0
+    - Added WatchableValueProgress for IProgress<T> interoperability.
+
+1.1.1
     - Added WatchableValueSource.GetOrChange and clarified lazy docs.
 
 1.1.0
